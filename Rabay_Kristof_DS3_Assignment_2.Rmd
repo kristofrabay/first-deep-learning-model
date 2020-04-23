@@ -1,0 +1,682 @@
+---
+title: "Data Science 3 Assignment 02"
+author: "Kristof Rabay"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, include = F}
+library(data.table)
+library(keras)
+library(ggplot2)
+
+options(digits = 6)
+options(scipen = 999)
+theme_set(theme_bw())
+```
+
+
+# Goal of the assignment
+
+Leverage Keras' deep learning methods to classify images. One exercise for multi-classification, one for binary.
+
+
+# Exercise 1: Fashion MNIST dataset - images of different types of clothes
+
+## 0. Loading the data
+
+```{r, warning = F, message = F}
+fashion_mnist <- dataset_fashion_mnist()
+x_train <- fashion_mnist$train$x
+y_train <- fashion_mnist$train$y
+x_test <- fashion_mnist$test$x
+y_test <- fashion_mnist$test$y
+```
+
+Let's see what we have:
+
+```{r}
+attributes(x_train)
+attributes(x_test)
+```
+
+1. 60k training images of 28x28 pixels
+2. 10k testing images of 28x28 pixels
+
+## 1. Let's take a look at some of the photos
+
+I need a function that takes the values of the 28*28 matrix and assigns colors to it:
+
+```{r}
+show_mnist_image <- function(x) {image(1:28, 1:28, t(x)[, nrow(x):1], col = gray((0:255)/255))}
+```
+
+Now let's apply that function and see some images:
+
+1. T-shirt
+
+```{r, fig.height = 5, fig.width = 5, fig.align='center'}
+show_mnist_image(x_train[18, , ])
+#x_train[18, , ]
+```
+
+2. A woman's sandal
+
+```{r, fig.height = 5, fig.width = 5, fig.align='center'}
+show_mnist_image(x_train[61, , ])
+#x_train[61, , ]
+```
+
+
+## 2. (Simple) Neural Network for classification
+
+1. Reshaping the images and the output
+
+The 60k * 28 * 28 array is 60k images of 28 * 28 pixels. Taking the 28*28 is 784 features. Those features are 0-255, so they need to be scaled - this time, by taking the max value (255) and dividing each value by it.
+
+```{r}
+x_train <- array_reshape(x_train, c(dim(x_train)[1], 784)) / 255
+x_test <- array_reshape(x_test, c(dim(x_test)[1], 784)) / 255
+```
+
+The output is a vector with values between 0-9. Instead, I'll create a 10 column matrix with values 0 or 1, indicating which class the given sample belongs to.
+
+```{r}
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test, 10)
+```
+
+
+2. Building the model
+
+I'll initiate a sequential model in Keras. Keep in mind that for now, I am not building a convolutional network, only a simple artificial neural network.
+
+For all models I'll use:
+
+- 1/3 validation set, 
+- 128 as batch size (loss will be calculated on 128 samples before updating weights), 
+- 30 epochs with a 
+- `callback` rule that stops the training if for 5 straight epochs the validation loss did not decrease by at least 0.005.
+
+My thoughts while training different structures:
+
+1. Increasing the hidden layers (with dropout rates) helps test accuracy until a certain point.
+2. Same goes for number of hidden units per hidden layer - too many and I'll overfit
+3. My stopping rule (validation loss reduction monitoring) never let the model reach the 30 epochs. Usually exited around 20
+
+During training I have tried:
+
+- different activation functions (elu, tanh, relu, sigmoid)
+- different rates for dropout - ended up using 20% (not too strict, not too conservative in my view)
+- different hidden units in the layers - kept it lower
+- different number of hidden layers - kept it at 2 - increasing it decreased val_acc
+
+```{r, warning = F, message = F}
+model <- keras_model_sequential() 
+
+model %>% 
+  layer_dense(units = 128, activation = 'sigmoid', input_shape = ncol(x_train)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 128, activation = 'sigmoid') %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 10, activation = 'softmax')
+
+model %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = 'adam',
+  metrics = 'accuracy')
+
+```
+
+Let's see the structure of my model:
+
+```{r}
+summary(model)
+
+```
+
+I'll have: 
+
+- 3 dense layers (all neurons from input layer connected to all hidden layer units)
+- 2 dropout layers (after each dense layer)
+- the last dense layer will classify to 10 categories with the softmax activation function
+- 118k parameters will be optimized during training
+
+```{r, warning = F, message = F}
+
+set.seed(20202020)
+
+history <- model %>% fit(x_train, y_train, 
+                         epochs = 30, 
+                         batch_size = 128, 
+                         validation_split = 1/3,
+                         verbose = 0,
+                         callbacks = list(callback_early_stopping(monitor = 'val_loss', 
+                                                                  min_delta = 0.005, 
+                                                                  patience = 5)))
+                                          #callback_reduce_lr_on_plateau(monitor = 'val_loss', 
+                                           #                             patience = 3, 
+                                            #                            factor = 0.1)))
+```
+
+
+Plotting how the loss and metric (accuracy) figures changed over the epochs.
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+plot(history, method = 'ggplot2', smooth = T, theme_bw = T)
+```
+
+On the plot, when the training loss started to get below the validation loss, the training stopped - due to the early stopping rule - so I can be hopeful to have avoided overfitting the net to my training set.
+
+Evaluating on the train set. I want to compare this to the next evaluation (on the test set) to check for overfit.
+
+```{r}
+evaluate(model, x_train, y_train, verbose = 0)$accuracy 
+```
+
+Looks like overall on the training set the net reached ~90% accuracy.
+
+
+## 3. Evaluating the NN model on the test set
+
+```{r}
+evaluate(model, x_test, y_test, verbose = 0)$accuracy 
+```
+
+On the test set, the accuracy is ~87-88% - 2% lower than on the train set. I would like to make a note that I have trained at least 20 different nets, and for every results, the test accuracy was around 2 % points lower than the train accuracy. With further regularization (l1, l2, larger dropout) both accuracies were dropping, but the difference was still this 1.5-2 pct points. I'm hoping in the next exercise, by using ConvNets, I'll be able to increase both accuracies and decrease the difference between train and test acc.
+
+Before that, let me take a look at the confusion matrix
+
+```{r, fig.height = 8, fig.width = 8, fig.align='center'}
+predicted_classes_test <- model %>% predict_classes(x_test)
+real_classes_test <- as.numeric(fashion_mnist$test$y)
+
+dt_pred_vs_real <- data.table(predicted = predicted_classes_test, real = real_classes_test)
+
+ggplot(dt_pred_vs_real[, .N, by = .(predicted, real)], aes(predicted, real)) +
+  geom_tile(aes(fill = N), colour = "white") +
+  scale_x_continuous(breaks = 0:9) +
+  scale_y_continuous(breaks = 0:9) +
+  geom_text(aes(label = sprintf("%1.0f", N)), color = "white") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Looks like there're some misclassification problems. Let's take one: when it comes to the category 0, sometimes it is predicted to be class 6. Let's see what that's all about:
+
+```{r, fig.height = 5, fig.width = 5, fig.align='center'}
+dt_pred_vs_real[, row_number := 1:.N]
+
+# predicted: 6, real : 0
+indices_of_mistakes <- dt_pred_vs_real[predicted == 6 & real == 0,][["row_number"]]
+
+# take one example
+ix <- indices_of_mistakes[10]
+
+# show the image
+show_mnist_image(fashion_mnist$test$x[ix, , ])
+```
+
+I can see how the model can confuse this with another clothing category. Let's train a ConvNet and see if we can increase accuracy.
+
+
+## 4. Convolutional Neural Network for the same (image) classification problem
+
+When it comes to image classification, we should immediately associate to convolutional neural networks, as they are the go-to deep learning algorithm for extracting patterns within images and building classification rules upon training.
+
+For the CNN, we need the input shape to be arrays: width * height * color_channel, so let's reshape the train and test sets.
+
+```{r}
+
+x_train <- fashion_mnist$train$x
+y_train <- fashion_mnist$train$y
+x_test <- fashion_mnist$test$x
+y_test <- fashion_mnist$test$y
+
+x_train <- array_reshape(x_train, c(nrow(x_train), 28, 28, 1)) / 255
+x_test <- array_reshape(x_test, c(nrow(x_test), 28, 28, 1)) / 255
+
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test, 10)
+
+```
+
+Let's take a look at the dimensions of the train and test sets for X (for y it is the same as before)
+
+```{r}
+attributes(x_train)
+attributes(x_test)
+```
+
+There are 60k images in the train set and 10k in the test set, all are 28*28 of shape and have 1 color channel (0 is black, 1 is white and everything in between is a shade of grey)
+
+
+I can now start building my ConvNet model.
+
+```{r}
+cnn <- keras_model_sequential()
+
+cnn %>% layer_conv_2d(filters = 32, 
+                      kernel_size = c(3, 3), 
+                      activation = 'relu', 
+                      input_shape = dim(x_train)[2:4]) %>% 
+  layer_conv_2d(filters = 32, 
+                kernel_size = c(3, 3), 
+                activation = 'relu') %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_dropout(rate = 0.2) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 64, activation = 'relu') %>% 
+  layer_dense(units = 32, activation = 'relu') %>% 
+  layer_dense(units = 10, activation = 'softmax')
+
+cnn %>% compile(loss = 'categorical_crossentropy',
+                optimizer = 'adam',
+                metrics = 'accuracy')
+```
+
+Here's the overview of the ConvNet that I've chosen as my final model
+
+```{r}
+summary(cnn)
+```
+
+1. It has 2 consecutive convolutional layers. I've chosen this structure to first let the net learn the patterns easily recognized by the human eyes, then, without pooling, have a second-level overview of the patterns found in the images.
+2. After two convolutions I've applied a max pooling layer
+3. I have introduced 1 dropout layer after the max pooling. I'm hoping this is going to handle overfitting.
+4. After dropping 20% of the pool neuron, I'm flattening the filter arrays (results).
+5. Before the softmax activation I've introduced 2 dense layers, I'm hoping the reduction will 'push' the similar images together closer and closer until it has to categorize them into 10 classes that add up to 1 (100% probability)
+
+Let's finally train this thing.
+
+```{r, warning = F, message = F}
+set.seed(20202020)
+
+cnn_hist <- cnn %>% fit(x_train, y_train, 
+                         epochs = 20, 
+                         batch_size = 128, 
+                         validation_split = 1/3,
+                         verbose = 0,
+                         callbacks = list(callback_early_stopping(monitor = 'val_loss', 
+                                                                  min_delta = 0.005, 
+                                                                  patience = 5)))
+                                          #callback_reduce_lr_on_plateau(monitor = 'val_loss', 
+                                           #                             patience = 3, 
+                                            #                            factor = 0.1)))
+```
+
+
+Plotting the epoch history
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+plot(cnn_hist, method = 'ggplot2', smooth = T, theme_bw = T)
+```
+
+We can see as the validation loss and accuracy converge to their minimum and maxiumum, respectively.
+
+
+Train evaluation
+
+```{r}
+evaluate(cnn, x_train, y_train, verbose = 0)$accuracy 
+```
+
+Test evaluation
+
+```{r}
+evaluate(cnn, x_test, y_test, verbose = 0)$accuracy 
+```
+
+Both the train and test accuracies seemingly increased. The former one from around 88-90 to around 94-96, the latter one from around 86-88 to around 90-92. Good job by CNN!
+
+
+One thing that could be added to increase accuracy is data augmentation - that is, rotation, zooming, reshaping of the images to let the model train on more different-looking pictures and learn the patterns to classify them correctly. This methodology will be showcased in the next and final exercise of this assignment.
+
+
+
+# Exercise 2: Hot-dog or no hot-dog - determining whether a photo contains a hot-dog or not.
+
+In this next and last exercise I will train a Keras neural net to determine of a photo if it's got a hotdog in it or not.
+
+## 0. Showing a couple of examples of the images
+
+I'll load the photos as 250x250 pixel files already, so we'll see what the model will be trained on. (The original size may differ, mostly is greater than 250x250 - sharper photo).
+
+Here's a hot-dog:
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+path <- "../../../machine-learning-course/data/hot-dog-not-hot-dog/train/hot_dog/1000288.jpg"
+grid::grid.raster(image_to_array(image_load(path, target_size = c(250, 250))) / 255)
+```
+
+Here's a photo without a hot-dog:
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+path <- "../../../machine-learning-course/data/hot-dog-not-hot-dog/train/not_hot_dog/100135.jpg"
+grid::grid.raster(image_to_array(image_load(path, target_size = c(250, 250))) / 255)
+```
+
+
+## 1. Loading and getting the images to the correct input shape (NO augmentation yet)
+
+Thinking ahead, I will have to avoid augmenting the validation images, so I'll create a new directory called `validation` and randomly select 20% of train hotdogs and train not hotdogs into this new directory.
+
+```{r, eval = FALSE, include = TRUE}
+# 249 photos in each
+hotdog_number <- length(list.files("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/hot_dog/"))
+nonhotdog_number <- length(list.files("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/not_hot_dog/"))
+
+# 20% of images
+# 49 photos each
+hd_to_val <- as.integer(0.2*hotdog_number)
+nhd_to_val <- as.integer(0.2*nonhotdog_number)
+
+# select the images randomly
+set.seed(20202020)
+hd <- sample(list.files("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/hot_dog/", 
+                        full.names = T), 
+             hd_to_val, 
+             replace = FALSE)
+set.seed(20202020)
+nhd <- sample(list.files("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/not_hot_dog/", 
+                         full.names = T), 
+              nhd_to_val, 
+              replace = FALSE)
+
+# move photos to new destination
+
+for (hot_dog in hd){
+  file.copy(hot_dog, "../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/validation/hot_dog/")
+}
+
+for (not_hot_dog in nhd){
+  file.copy(not_hot_dog, "../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/validation/not_hot_dog/")
+}
+
+for (hot_dog in hd){
+  file.remove(hot_dog)
+}
+
+for (not_hot_dog in nhd){
+  file.remove(not_hot_dog)
+}
+
+```
+
+All set! Validation set created, train set does not include validation, so we're good to go!
+
+```{r}
+train_datagen <- image_data_generator(rescale = 1/255) 
+valid_datagen <- image_data_generator(rescale = 1/255) 
+test_datagen <- image_data_generator(rescale = 1/255) 
+
+image_size <- c(250, 250)
+batch_size <- 20
+
+train_generator <- flow_images_from_directory("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/",  
+                                              train_datagen,
+                                              target_size = image_size,
+                                              batch_size = batch_size,
+                                              class_mode = "binary")
+
+valid_generator <- flow_images_from_directory("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/validation/",  
+                                              valid_datagen,
+                                              target_size = image_size,
+                                              batch_size = batch_size,
+                                              class_mode = "binary")
+
+test_generator <- flow_images_from_directory("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/test/", 
+                                             test_datagen,
+                                             target_size = image_size,
+                                             batch_size = batch_size,
+                                             class_mode = "binary")
+```
+
+As stated above, I've split the train images into an actual train and validation sets, for the `fit_generator` to have a validation dataset while training.
+
+How many images are in my train, validation and test sets?
+
+```{r}
+train_generator$samples
+valid_generator$samples
+test_generator$samples
+```
+
+400 in the train, 98 in the validation and 500 in the test. This is a very very small dataset to train a Net on.
+
+Let's see if I've succeeded in setting up an image feed structure.
+
+```{r}
+str(generator_next(train_generator))
+```
+
+Seems like there're 2 elements in the above list: (1) are the actual images in batches of 20, sizes of 250x250 and color channels of 3; and (2) are the outcomes (classes).
+
+## 2. Simple ConvNet trained on data
+
+```{r, warning = F, message = F}
+noaug <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(250, 250, 3), padding = 'same') %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu', padding = 'same') %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_global_average_pooling_2d() %>% 
+  #layer_flatten() %>% 
+  layer_dense(units = 256, activation = 'relu') %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_dense(units = 1, activation = 'sigmoid')
+
+
+noaug %>% compile(loss = 'binary_crossentropy',
+                optimizer = 'adam', # also tried rmsprop, adam with different lr
+                metrics = 'accuracy')
+```
+
+
+Before fitting, let's see the structure:
+
+```{r}
+summary(noaug)
+```
+
+2 Convolution-Pooling layers following each other, a drop-out layer after each, then flattening (by GlobalAveragePooling - I did some research and global pooling can better represent the filter array and flatten() is more expensive and may overfit worse because it is more dense) and fully connecting the last 2 layers, with a dropout layer before the final classes. Total of 36k coefficients to be trained.
+
+For the fitting procudure, I will use
+
+- 20 steps / epoch (400 train images, 20 batch size)
+- 20 epochs
+- 5 validation steps (~100 validation images, 20 batch size)
+- 2 callback rules: (1) reducing the learning rate by factor of 0.1 if for 3 consecutive epochs the validation loss does not decrease and (2) stopping the training if for 8 cons epochs the val loss does not decrease.
+
+Finally let's fit the simple ConvNet:
+
+```{r, warning = F, message = F}
+set.seed(20202020)
+history <- noaug %>% fit_generator(train_generator,
+                                    steps_per_epoch = 20,
+                                    epochs = 20, 
+                                    validation_data = valid_generator, 
+                                    validation_steps = 5,
+                                    verbose = 0,
+                                    callbacks = list(callback_reduce_lr_on_plateau(monitor = 'val_loss',
+                                                                                   patience = 3, 
+                                                                                   factor = 0.1),
+                                                     callback_early_stopping(monitor = 'val_loss', 
+                                                                             min_delta = 0.005, 
+                                                                             patience = 8)))
+```
+
+Let's see what we've got
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+plot(history, method = 'ggplot2', smooth = T, theme_bw = T)
+```
+
+The train accuracy reaches around 65% while the validation accuracy stays around 60. This is barely better than random guessing so let's see if data augmentation can help. Before that, let's just see the test accuracy.
+
+Evaluating the ConvNet:
+
+```{r}
+evaluate_generator(noaug, test_generator, 50)$accuracy
+```
+
+Accuracy on test is very close to 50%, a terrible performance. I even experimented with smaller and smaller learning rates, performance got better only marginally (with reducing the learning rate)
+
+This performance is all due to the small size of the dataset. The net simply cannot learn enough from the train set. There is a way to increase the 'diversity' of the input images tho. It is called data augmentation, a process that lets you do random stuff to the images (rotating, zooming, flipping) to let the net get exposed to a larger variety of images.
+
+## 3. ConvNet with data augmentation preprocessing
+
+On such a small dataset it makes a lot of sense to apply augmentation techniques. I will be applying the following methodologies:
+
+1. Rotation - it's photos of food, can be taken from any angle
+2. Shifts - hotdog can be anywhere in the photo, on the left, on the top, etc..
+3. Zooming - hot-dog can be very 'small' on the photo (i.e. on a table full of other food)
+4. Flips - as mentioned, photo can be taken from any angle. An upside down hotdog is a hotdog as well.
+
+Only the training data generator changes, with the augmentation methods:
+
+```{r}
+train_datagen <- image_data_generator(rescale = 1/255,
+                                     rotation_range = 45,
+                                     width_shift_range = 0.2,
+                                     height_shift_range = 0.2,
+                                     zoom_range = 0.2,
+                                     horizontal_flip = TRUE,
+                                     vertical_flip = TRUE,
+                                     fill_mode = "nearest")
+
+train_generator <- flow_images_from_directory("../../../machine-learning-course/data/hot-dog-not-hot-dog_with_validation/train/",  
+                                              train_datagen,
+                                              target_size = image_size,
+                                              batch_size = batch_size,
+                                              class_mode = "binary")
+
+```
+
+Let's build the model on the augmented train set. I'll build a model with the same structure as before to be able to compare performance.
+
+```{r, warning = F, message = F}
+aug <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(250, 250, 3), padding = 'same') %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu', padding = 'same') %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_global_average_pooling_2d() %>% 
+  layer_dense(units = 256, activation = 'relu') %>% 
+  layer_dropout(rate = 0.25) %>%
+  layer_dense(units = 1, activation = 'sigmoid')
+
+
+aug %>% compile(loss = 'binary_crossentropy',
+                optimizer = 'adam', # also tried rmsprop, adam with different lr
+                metrics = 'accuracy')
+```
+
+Let's train the ConvNet and hope it's better than the previous (not augmented) model.
+
+```{r, warning = F, message = F}
+set.seed(20202020)
+history_aug <- aug %>% fit_generator(train_generator,
+                                    steps_per_epoch = 20,
+                                    epochs = 20, 
+                                    validation_data = valid_generator, 
+                                    validation_steps = 5,
+                                    verbose = 0,
+                                    callbacks = list(callback_reduce_lr_on_plateau(monitor = 'val_loss',
+                                                                                   patience = 3, 
+                                                                                   factor = 0.1),
+                                                     callback_early_stopping(monitor = 'val_loss', 
+                                                                             min_delta = 0.005, 
+                                                                             patience = 8)))
+```
+
+Let's plot the training history:
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+plot(history_aug, method = 'ggplot2', smooth = T, theme_bw = T)
+```
+
+Doesn't seem like it achieved better accuracy, but validation scores don't converge as much as in the previous history plot.
+
+Let's check out the test accuracy
+
+```{r}
+evaluate_generator(aug, test_generator, 50)$accuracy
+```
+
+I cannot say that augmentation improved my ConvNet trying to classify images into 'have hotdog in them' and 'do not have hotdogs in them'.
+
+Let's turn to the last exercise, when I'll be leveraging a pre-trained neural network to achieve better accuracy.
+
+## 4. Using pre-trained a ConvNet with transfer learning
+
+```{r, warning = F, message = F}
+base_model <- application_inception_v3(include_top = FALSE, weights = 'imagenet', input_shape = c(250, 250, 3))
+
+freeze_weights(base_model)
+
+top_layer <- base_model$output %>% 
+  layer_global_average_pooling_2d() %>% 
+  layer_dense(units = 32, activation = 'relu') %>% 
+  layer_dense(units = 1, activation = 'sigmoid')
+
+tr_model <- keras_model(inputs = base_model$input, outputs = top_layer)
+
+tr_model %>% compile(loss = 'binary_crossentropy',
+                optimizer = 'adam', 
+                metrics = 'accuracy')
+
+```
+
+Before training the net let's take a look at the stucture and how many parameters will need to be tuned.
+
+```{r}
+summary(tr_model)
+```
+
+There are a total of almost 22 million parameters, but 21.8 million are frozen, meaning the `InceptionV3` pre-trained layers will not be touched. It's only the final 3 layers (a flattening via global pooling, and the last 2 dense layers) that will be trained to the train data.
+
+Let's train it. I have to set the epoch to 5 (maximum) becuase training even just 1 epoch takes about 5-7 minutes. I've also eliminated callbacks, as training 5 epochs simply doesn't let the callback go into effect (small chance only)
+
+```{r, warning = F, message = F}
+set.seed(20202020)
+tlhis <- tr_model %>% fit_generator(train_generator,
+                                    steps_per_epoch = 20,
+                                    epochs = 5, 
+                                    validation_data = valid_generator, 
+                                    validation_steps = 5)
+                                    #callbacks = list(callback_reduce_lr_on_plateau(monitor = 'val_loss',
+                                     #                                              patience = 3, 
+                                      #                                             factor = 0.1),
+                                                     #callback_early_stopping(monitor = 'val_loss', 
+                                                     #                        min_delta = 0.005, 
+                                                     #                        patience = 8)))
+```
+
+Let's see what happened in the 5 epochs.
+
+```{r, fig.height = 5, fig.width = 8, fig.align='center'}
+plot(tlhis, method = 'ggplot2', smooth = T, theme_bw = T)
+```
+
+Seemingly the pre-trained net achieved a much much better accuracy in already 5 epochs. Even my ConvNet on augmented images was under 60% accuracy, this pre-trained net scored around 85% on the train data and validation set as well.
+
+Let's evaluate the ConvNet on the test set:
+
+```{r}
+evaluate_generator(tr_model, test_generator, 50)$accuracy
+```
+
+Previously my test accuracies were (let's be honest) just as good as random guessing. Using the `InceptionV3` net with the `imagenet` weights and simply training 3 layers on top of it increased the score from around 50% all the way up to ~85%.
+
+I'm not that proud of 85%, but coming from 50% to 85% is a great result. In practice I suppose I wouldn't producionize a net if it had not reached at least 92-95% accuracy, which I'm sure with more data to train and validate on, with a more powerful machine and more time is feasible.
+
+This concludes my 2nd assignment for the Data Science 3 course. I've trained a simple neural net and multiple convolutional neural nets, classified images into multiple categories (clothing) and into binary classes (hotdogs or not), built networks myself, leveraged existing ConvNets. During the process I've developed a much better understanding regarding the input shape of the convolutional networks, how filters work, what pooling is, tried different optimizers and callbacks and got hands on experience building Keras nets, which let me learn substantially more about neural networks than simply reading about them.
